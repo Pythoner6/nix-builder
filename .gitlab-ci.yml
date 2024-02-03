@@ -1,0 +1,32 @@
+stages:
+- build
+- push
+build:
+  id_tokens:
+    ID_TOKEN_ATTIC:
+      aud: $ATTIC_URL
+  stage: build
+  image: $CI_REGISTRY/homelab/nix-builder:latest
+  script:
+  - |
+    response=$(curl --fail-with-body -L -X POST -H "Authorization: Bearer $ID_TOKEN_ATTIC" "$ATTIC_URL/_token")
+    if [[ "$?" != "0" ]]; then
+      echo $response
+      exit 1
+    fi
+    attic login --set-default "$CI_PROJECT_NAMESPACE" "$ATTIC_URL" "$(jq '.token' -r <<< "$response")"
+  - attic use "$CI_PROJECT_NAMESPACE"
+  - attic watch-exec --ignore-upstream-cache-filter "$CI_PROJECT_NAMESPACE" -- nix build --no-update-lock-file
+  - declare -a flake_inputs="($(nix flake archive --json | jq -r '.inputs[].path | @sh'))"
+  - attic push "$CI_PROJECT_NAMESPACE" "${flake_inputs[@]}"
+  - cp result image.tgz
+  artifacts:
+    paths:
+    - image.tgz
+    expire_in: 1 week
+push:
+  stage: push
+  image: $CI_REGISTRY/homelab/nix-builder:latest
+  script:
+  - nix develop .#push -c skopeo login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  - nix develop .#push -c skopeo copy docker-archive:image.tgz docker://$CI_REGISTRY/homelab/nix-builder:latest
